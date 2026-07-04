@@ -24,14 +24,16 @@ const client = new MongoClient(uri, {
 });
 
 
+let db ,incomeCullection,userCullection
+
 async function connectDB() {
   try {
     await client.connect();
     console.log("🎯 Successfully connected to MongoDB!");
 
-   const  db = client.db('finora-db');
-   const incomeCullection = db.collection('incomes');
-   const userCullection = db.collection('user');
+     db = client.db('finora-db');
+    incomeCullection = db.collection('incomes');
+    userCullection = db.collection('user');
     
   } catch (err) {
     console.error("❌ MongoDB connection error:", err);
@@ -43,8 +45,24 @@ app.get('/', (req, res) => {
 });
 
 
+app.get('/api/incomes',async(req,res)=>{
+   try {
+    const { email } = req.query; 
+    if (!email) {
+      return res.status(400).json({ message: "Email query parameter is required" });
+    }
+    const userIncomes = await incomeCullection.find({ userEmail: email }) 
+      .sort({ date: -1 })        
+      .toArray();                
 
-app.post('/incomes', async (req, res) => {
+    res.send(userIncomes);
+  } catch (error) {
+    console.error("Database Fetch Error:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+})
+
+app.post('/api/incomes', async (req, res) => {
    try {
         const incomes = req.body;
         const newIncome = {
@@ -57,7 +75,10 @@ app.post('/incomes', async (req, res) => {
       } catch (error) {
         res.status(500).send({ error: true, message: error.message });
       }
+
 });
+
+
 
 
 connectDB().then(() => {
