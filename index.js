@@ -79,6 +79,68 @@ app.post('/api/incomes', async (req, res) => {
 });
 
 
+app.patch('/api/incomes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+  
+    if (!updateData.userEmail) {
+      return res.status(400).json({ message: "User email is required for verification" });
+    }
+
+   
+    const { userEmail, ...allowedUpdateFields } = updateData;
+
+ 
+    const filter = { _id: new ObjectId(id), userEmail: userEmail };
+    
+    const updateDoc = {
+      $set: {
+        ...allowedUpdateFields, 
+        updatedAt: new Date()
+      }
+    };
+
+    const result = await incomeCullection.updateOne(filter, updateDoc);
+    
+    if (result.matchedCount === 0) {
+      return res.status(403).json({ message: "Unauthorized or income record not found" });
+    }
+
+    console.log(result, 'income updated');
+    res.send({ success: true, result }); 
+  } catch (error) {
+    console.error("Database Update Error:", error);
+    res.status(500).json({ message: "Internal server error", error: error.message });
+  }
+});
+
+
+app.delete('/api/incomes/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { userEmail } = req.query; 
+
+    if (!userEmail) {
+      return res.status(400).json({ message: "User email is required for verification" });
+    }
+
+    const filter = { _id: new ObjectId(id), userEmail: userEmail };
+    const result = await incomeCullection.deleteOne(filter);
+
+    if (result.deletedCount === 0) {
+      return res.status(403).json({ message: "Unauthorized or income record not found" });
+    }
+
+    res.send(result);
+  } catch (error) {
+    console.error("Database Delete Error:", error);
+    res.status(500).json({ message: "Internal server error", error: error.message });
+  }
+});
+
+
 
 
 connectDB().then(() => {
