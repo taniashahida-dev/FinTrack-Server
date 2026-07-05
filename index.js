@@ -47,14 +47,28 @@ app.get("/", (req, res) => {
 
 app.get("/api/expenses", async (req, res) => {
   try {
-    const { email } = req.query;
+    const { email, search, category } = req.query;
+
     if (!email) {
       return res
         .status(400)
         .json({ message: "Email query parameter is required" });
     }
+
+    const query = { userEmail: email };
+
+    if (search) {
+      query.$or = [
+        { title: { $regex: search, $options: "i" } },
+        { description: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    if (category && category.toLowerCase() !== "all") {
+      query.category = { $regex: new RegExp(`^${category}$`, "i") };
+    }
     const userExpenses = await expenseCollection
-      .find({ userEmail: email })
+      .find(query)
       .sort({ date: -1 })
       .toArray();
 
@@ -69,7 +83,9 @@ app.post("/api/expenses", async (req, res) => {
   try {
     const expenses = req.body;
     if (!expenses.userEmail) {
-      return res.status(400).json({ message: "User email is required to add an expense" });
+      return res
+        .status(400)
+        .json({ message: "User email is required to add an expense" });
     }
     const newExpense = {
       ...expenses,
@@ -77,7 +93,7 @@ app.post("/api/expenses", async (req, res) => {
     };
     const result = await expenseCollection.insertOne(newExpense);
     console.log(result);
-   res.send({ success: true, ...result })
+    res.send({ success: true, ...result });
   } catch (error) {
     res.status(500).send({ error: true, message: error.message });
   }
