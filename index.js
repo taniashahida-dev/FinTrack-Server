@@ -23,7 +23,7 @@ const client = new MongoClient(uri, {
   },
 });
 
-let db, incomeCollection, userCollection, expenseCollection;
+let db, incomeCollection, userCollection, expenseCollection, budgetCollection;
 
 async function connectDB() {
   try {
@@ -34,6 +34,7 @@ async function connectDB() {
     incomeCollection = db.collection("incomes");
     userCollection = db.collection("user");
     expenseCollection = db.collection("expenses");
+    budgetCollection = db.collection("budgets");
   } catch (err) {
     console.error("❌ MongoDB connection error:", err);
   }
@@ -41,6 +42,100 @@ async function connectDB() {
 
 app.get("/", (req, res) => {
   res.send("FinTrack Server is Running...");
+});
+
+//---------------Budget API--------------
+
+app.post("/api/budgets", async (req, res) => {
+  try {
+    const { userEmail, category, amount, monthYear } = req.body;
+    const filter = {
+      userEmail,
+      category: { $regex: new RegExp(`^${category}$`, "i") },
+      monthYear,
+    };
+
+    const updateDoc = {
+      $set: {
+        amount: parseFloat(amount),
+      },
+      $setOnInsert: {
+        userEmail,
+        category,
+        monthYear,
+      },
+    };
+
+    const result = await budgetCollection.updateOne(filter, updateDoc, {
+      upsert: true,
+    });
+    res.send({ success: true, result });
+  } catch (error) {
+    res.status(500).send({ message: "Error setting budget", error });
+  }
+});
+
+app.get("/api/budget-overview", async (req, res) => {
+  try {
+    const { email, monthYear } = req.query;
+
+    if (!email || !monthYear) {
+      return res
+        .status(400)
+        .json({ error: "Email and monthYear are required" });
+    }
+
+    const budgets =
+      (await budgetCollection
+        .find({ userEmail: email, monthYear: monthYear })
+        .toArray()) || [];
+    const expenses =
+      (await expenseCollection
+        .find({
+          userEmail: email,
+          date: { $regex: `^${monthYear}` },
+        })
+        .toArray()) || [];
+
+    const totalBudget = budgets.reduce(
+      (sum, b) => sum + (Number(b.amount) || 0),
+      0,
+    );
+
+    let totalSpentInBudgetedCategories = 0;
+
+    const categoryBreakdown = budgets.map((b) => {
+      const spentInCat = expenses
+        .filter((e) => e.category?.toLowerCase() === b.category?.toLowerCase())
+        .reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
+
+      totalSpentInBudgetedCategories += spentInCat;
+
+      const percentUsed =
+        b.amount > 0 ? Math.round((spentInCat / b.amount) * 100) : 0;
+
+      return {
+        category: b.category,
+        budgetAmount: Number(b.amount) || 0,
+        spent: spentInCat,
+        remaining: (Number(b.amount) || 0) - spentInCat,
+        percentUsed,
+        isExceeded: spentInCat > (Number(b.amount) || 0),
+      };
+    });
+
+    const remaining = totalBudget - totalSpentInBudgetedCategories;
+
+    return res.json({
+      totalBudget,
+      totalSpent: totalSpentInBudgetedCategories,
+      remaining,
+      categoryBreakdown,
+    });
+  } catch (error) {
+    console.error("❌ Backend Budget Overview Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
 });
 
 //---------------Expenses API--------------
