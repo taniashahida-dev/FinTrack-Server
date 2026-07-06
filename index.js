@@ -44,6 +44,148 @@ app.get("/", (req, res) => {
   res.send("FinTrack Server is Running...");
 });
 
+
+//--------------- Complete Dashboard Overview API --------------
+app.get("/api/dashboard-overview", async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (!email) {
+      return res.status(400).json({ error: "Email query parameter is required" });
+    }
+
+    const expenses = await expenseCollection.find({ userEmail: email }).toArray() || [];
+    const incomes = await incomeCollection.find({ userEmail: email }).toArray() || [];
+    const budgets = await budgetCollection.find({ userEmail: email }).toArray() || [];
+
+   
+    const today = new Date();
+    const currentYear = today.getFullYear();
+    const currentMonthIdx = today.getMonth(); // 0-11
+    
+    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const currentMonthName = monthNames[currentMonthIdx];
+    const prevMonthName = monthNames[currentMonthIdx === 0 ? 11 : currentMonthIdx - 1];
+
+    const currentYearMonthStr = `${currentYear}-${String(currentMonthIdx + 1).padStart(2, "0")}`;
+    const prevYearMonthStr = currentMonthIdx === 0 
+      ? `${currentYear - 1}-12` 
+      : `${currentYear}-${String(currentMonthIdx).padStart(2, "0")}`;
+
+    let totalIncomeAllTime = incomes.reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
+    let totalExpenseAllTime = expenses.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
+    const totalBalance = totalIncomeAllTime - totalExpenseAllTime;
+
+  
+    const currentMonthIncome = incomes
+      .filter(i => i.date && i.date.startsWith(currentYearMonthStr))
+      .reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
+
+    const prevMonthIncome = incomes
+      .filter(i => i.date && i.date.startsWith(prevYearMonthStr))
+      .reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
+
+
+    const currentMonthExpense = expenses
+      .filter(e => e.date && e.date.startsWith(currentYearMonthStr))
+      .reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
+
+    const prevMonthExpense = expenses
+      .filter(e => e.date && e.date.startsWith(prevYearMonthStr))
+      .reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
+
+    const getPercentageChange = (current, previous) => {
+      if (previous === 0) return current > 0 ? 100 : 0;
+      return Number((((current - previous) / previous) * 100).toFixed(1));
+    };
+
+    const incomeChange = getPercentageChange(currentMonthIncome, prevMonthIncome);
+    const expenseChange = getPercentageChange(currentMonthExpense, prevMonthExpense);
+
+    const currentMonthSavings = currentMonthIncome - currentMonthExpense;
+    const savingsRate = currentMonthIncome > 0 
+      ? Number(((currentMonthSavings / currentMonthIncome) * 100).toFixed(1)) 
+      : 0;
+
+    const getYearMonthStr = (dateVal) => {
+      if (!dateVal) return null;
+      const d = new Date(dateVal);
+      return isNaN(d) ? null : `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+    };
+
+    const activeMonthsSet = new Set();
+    incomes.forEach(i => { const ym = getYearMonthStr(i.date); if (ym) activeMonthsSet.add(ym); });
+    expenses.forEach(e => { const ym = getYearMonthStr(e.date); if (ym) activeMonthsSet.add(ym); });
+    
+    let sortedMonths = Array.from(activeMonthsSet).sort().slice(-6);
+    if (sortedMonths.length === 0) sortedMonths = [currentYearMonthStr];
+
+    const chartData = sortedMonths.map(ym => {
+      const [year, mStr] = ym.split("-");
+      const label = `${monthNames[parseInt(mStr, 10) - 1]} ${year.slice(-2)}`;
+      const incSum = incomes.filter(i => getYearMonthStr(i.date) === ym).reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
+      const expSum = expenses.filter(e => getYearMonthStr(e.date) === ym).reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
+      return { month: label, Income: incSum, Expense: expSum };
+    });
+    const categoryMap = {};
+    expenses
+      .filter(e => e.date && e.date.startsWith(currentYearMonthStr))
+      .forEach(e => {
+        if (e.category) {
+          const cat = e.category.charAt(0).toUpperCase() + e.category.slice(1).toLowerCase();
+          categoryMap[cat] = (categoryMap[cat] || 0) + (Number(e.amount) || 0);
+        }
+      });
+
+    const categoryData = Object.keys(categoryMap).map(cat => ({
+      name: cat,
+      value: categoryMap[cat]
+    })).sort((a, b) => b.value - a.value);
+
+    const combinedTransactions = [
+      ...incomes.map(i => ({ id: i._id, title: i.source, category: "Income", date: i.date, amount: Number(i.amount), type: "income" })),
+      ...expenses.map(e => ({ id: e._id, title: e.title || e.category, category: e.category, date: e.date, amount: Number(e.amount), type: "expense" }))
+    ];
+
+    const recentTransactions = combinedTransactions
+      .sort((a, b) => new Date(b.date) - new Date(a.date))
+      .slice(0, 5);
+
+    const currentMonthBudgets = budgets.filter(b => b.monthYear === currentYearMonthStr);
+    const budgetProgress = currentMonthBudgets.map(b => {
+      const spentInCat = expenses
+        .filter(e => e.date && e.date.startsWith(currentYearMonthStr) && e.category?.toLowerCase() === b.category?.toLowerCase())
+        .reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
+
+      return {
+        category: b.category.charAt(0).toUpperCase() + b.category.slice(1).toLowerCase(),
+        spent: spentInCat,
+        limit: Number(b.amount) || 0
+      };
+    }).slice(0, 4); 
+    return res.json({
+      user: { currentMonthName, prevMonthName },
+      cards: {
+        totalBalance,
+        monthlyIncome: currentMonthIncome,
+        incomeChange,
+        totalExpense: currentMonthExpense,
+        expenseChange,
+        savingsRate
+      },
+      chartData,
+      categoryData,
+      recentTransactions,
+      budgetProgress
+    });
+
+  } catch (error) {
+    console.error("❌ Dashboard API Error:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
+
 //--------------- Analytics API --------------
 
 app.get("/api/analytics-overview", async (req, res) => {
