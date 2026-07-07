@@ -1,6 +1,7 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 const app = express();
@@ -48,6 +49,81 @@ async function connectDB() {
 
 app.get("/", (req, res) => {
   res.send("FinTrack Server is Running...");
+});
+
+//--------------- User Settings API --------------
+
+app.get("/api/user-settings", async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (!email) {
+      return res
+        .status(400)
+        .json({ message: "Email query parameter is required" });
+    }
+
+    const userSettings = await userCollection.findOne({ email: email });
+
+    if (!userSettings || !userSettings.settings) {
+      return res.json({
+        settings: {
+          budgetAlerts: true,
+          largeExpenseAlerts: true,
+          monthlyReports: true,
+          emailNotifications: false,
+        },
+      });
+    }
+
+    res.send({ settings: userSettings.settings });
+  } catch (error) {
+    console.error("❌ Fetch Settings Error:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.patch("/api/user-settings", async (req, res) => {
+  try {
+    const { email, settings } = req.body;
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
+    const filter = { email: email };
+    const updateDoc = {
+      $set: { settings: settings },
+      $setOnInsert: { email: email, createdAt: new Date() },
+    };
+
+    const result = await userCollection.updateOne(filter, updateDoc, {
+      upsert: true,
+    });
+    res.send({ success: true, result });
+  } catch (error) {
+    console.error("❌ Save Settings Error:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.delete("/api/reset-data", async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
+    await expenseCollection.deleteMany({ userEmail: email });
+
+    await incomeCollection.deleteMany({ userEmail: email });
+
+    res.send({
+      success: true,
+      message: "All financial data reset successfully",
+    });
+  } catch (error) {
+    console.error("❌ Reset Data Error:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
 });
 
 // --------------- Notifications API --------------
@@ -657,22 +733,32 @@ app.post("/api/expenses", async (req, res) => {
         if (totalSpent > budgetAmount) {
           const exceededBy = totalSpent - budgetAmount;
 
-          const existingAlert = await notificationCollection.findOne({
-            userEmail: userEmail,
-            type: "alert",
-            title: "Budget Exceeded",
-            message: { $regex: category },
+          const userSettings = await userCollection.findOne({
+            email: userEmail,
           });
 
-          if (!existingAlert) {
-            await notificationCollection.insertOne({
+          const isBudgetAlertEnabled = userSettings?.settings
+            ? userSettings.settings.budgetAlerts
+            : true;
+
+          if (isBudgetAlertEnabled) {
+            const existingAlert = await notificationCollection.findOne({
               userEmail: userEmail,
-              title: "Budget Exceeded",
-              message: `Your ${category.charAt(0).toUpperCase() + category.slice(1).toLowerCase()} budget has been exceeded by ৳${exceededBy.toLocaleString()}`,
               type: "alert",
-              isRead: false,
-              createdAt: new Date(),
+              title: "Budget Exceeded",
+              message: { $regex: category },
             });
+
+            if (!existingAlert) {
+              await notificationCollection.insertOne({
+                userEmail: userEmail,
+                title: "Budget Exceeded",
+                message: `Your ${category.charAt(0).toUpperCase() + category.slice(1).toLowerCase()} budget has been exceeded by ৳${exceededBy.toLocaleString()}`,
+                type: "alert",
+                isRead: false,
+                createdAt: new Date(),
+              });
+            }
           }
         }
       }
