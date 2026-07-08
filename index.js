@@ -1,5 +1,6 @@
 require("dotenv").config();
 const express = require("express");
+const { getYearMonthStr } = require("./utils/date");
 const cors = require("cors");
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
@@ -31,17 +32,76 @@ let db,
   budgetCollection,
   notificationCollection;
 
+// Common Helper Functions
+
+const isValidObjectId = (id) => ObjectId.isValid(id);
+
+const sendServerError = (res, error, message = "Internal server error") => {
+  console.error(error);
+  return res.status(500).json({
+    success: false,
+    message,
+  });
+};
+
+// Validate email
+const validateEmail = (email, res) => {
+  if (!email) {
+    return res.status(400).json({
+      success: false,
+      message: "Email is required",
+    });
+  }
+
+  return true;
+};
+
+// Validate userEmail
+const validateUserEmail = (userEmail, res) => {
+  if (!userEmail) {
+    return res.status(400).json({
+      success: false,
+      message: "User email is required",
+    });
+  }
+
+  return true;
+};
+
 async function connectDB() {
   try {
     await client.connect();
     console.log("🎯 Successfully connected to MongoDB!");
 
     db = client.db("finora-db");
+
     incomeCollection = db.collection("incomes");
     userCollection = db.collection("user");
     expenseCollection = db.collection("expenses");
     budgetCollection = db.collection("budgets");
     notificationCollection = db.collection("notifications");
+
+    // ==================== CREATE INDEXES ====================
+
+    await expenseCollection.createIndex({ userEmail: 1 });
+    await expenseCollection.createIndex({ userEmail: 1, date: -1 });
+    await expenseCollection.createIndex({ userEmail: 1, category: 1 });
+
+    await incomeCollection.createIndex({ userEmail: 1 });
+    await incomeCollection.createIndex({ userEmail: 1, date: -1 });
+
+    await budgetCollection.createIndex({
+      userEmail: 1,
+      monthYear: 1,
+      category: 1,
+    });
+
+    await notificationCollection.createIndex({
+      userEmail: 1,
+      createdAt: -1,
+    });
+
+    await userCollection.createIndex({ email: 1 }, { unique: true });
   } catch (err) {
     console.error("❌ MongoDB connection error:", err);
   }
@@ -56,11 +116,7 @@ app.get("/", (req, res) => {
 app.get("/api/user-settings", async (req, res) => {
   try {
     const { email } = req.query;
-    if (!email) {
-      return res
-        .status(400)
-        .json({ message: "Email query parameter is required" });
-    }
+    if (!validateEmail(email, res)) return;
 
     const userSettings = await userCollection.findOne({ email: email });
 
@@ -77,22 +133,19 @@ app.get("/api/user-settings", async (req, res) => {
 
     res.send({ settings: userSettings.settings });
   } catch (error) {
-    console.error("❌ Fetch Settings Error:", error);
-    res.status(500).json({ message: "Internal server error" });
+    return sendServerError(res, error);
   }
 });
 
 app.patch("/api/user-settings", async (req, res) => {
   try {
     const { email, settings } = req.body;
-    if (!email) {
-      return res.status(400).json({ message: "Email is required" });
-    }
+    if (!validateEmail(email, res)) return;
 
     const filter = { email: email };
     const updateDoc = {
       $set: { settings: settings },
-      $setOnInsert: { email: email, createdAt: new Date() },
+      $setOnInsert: { email, createdAt: new Date() },
     };
 
     const result = await userCollection.updateOne(filter, updateDoc, {
@@ -100,17 +153,14 @@ app.patch("/api/user-settings", async (req, res) => {
     });
     res.send({ success: true, result });
   } catch (error) {
-    console.error("❌ Save Settings Error:", error);
-    res.status(500).json({ message: "Internal server error" });
+    return sendServerError(res, error);
   }
 });
 
 app.delete("/api/reset-data", async (req, res) => {
   try {
     const { email } = req.query;
-    if (!email) {
-      return res.status(400).json({ message: "Email is required" });
-    }
+    if (!validateEmail(email, res)) return;
 
     await expenseCollection.deleteMany({ userEmail: email });
 
@@ -121,8 +171,7 @@ app.delete("/api/reset-data", async (req, res) => {
       message: "All financial data reset successfully",
     });
   } catch (error) {
-    console.error("❌ Reset Data Error:", error);
-    res.status(500).json({ message: "Internal server error" });
+    return sendServerError(res, error);
   }
 });
 
@@ -131,11 +180,7 @@ app.delete("/api/reset-data", async (req, res) => {
 app.get("/api/notifications", async (req, res) => {
   try {
     const { email } = req.query;
-    if (!email) {
-      return res
-        .status(400)
-        .json({ message: "Email query parameter is required" });
-    }
+    if (!validateEmail(email, res)) return;
 
     const notifications =
       (await notificationCollection
@@ -145,8 +190,7 @@ app.get("/api/notifications", async (req, res) => {
 
     res.send(notifications);
   } catch (error) {
-    console.error("❌ Fetch Notifications Error:", error);
-    res.status(500).json({ message: "Internal server error" });
+    return sendServerError(res, error);
   }
 });
 
@@ -155,32 +199,33 @@ app.patch("/api/notifications/:id", async (req, res) => {
     const { id } = req.params;
     const { userEmail } = req.body;
 
-    const filter = { _id: new ObjectId(id), userEmail: userEmail };
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid ID",
+      });
+    }
+    const filter = { _id: new ObjectId(id), userEmail };
     const updateDoc = { $set: { isRead: true } };
 
     const result = await notificationCollection.updateOne(filter, updateDoc);
     res.send({ success: true, result });
   } catch (error) {
-    console.error("❌ Mark Read Error:", error);
-    res.status(500).json({ message: "Internal server error" });
+    return sendServerError(res, error);
   }
 });
 
 app.patch("/api/notifications/mark-all-read", async (req, res) => {
   try {
     const { userEmail } = req.body;
-    if (!userEmail) {
-      return res.status(400).json({ message: "User email is required" });
-    }
-
+    if (!validateUserEmail(userEmail, res)) return;
     const result = await notificationCollection.updateMany(
-      { userEmail: userEmail, isRead: false },
+      { userEmail, isRead: false },
       { $set: { isRead: true } },
     );
     res.send({ success: true, result });
   } catch (error) {
-    console.error("❌ Mark All Read Error:", error);
-    res.status(500).json({ message: "Internal server error" });
+    return sendServerError(res, error);
   }
 });
 
@@ -188,14 +233,18 @@ app.delete("/api/notifications/:id", async (req, res) => {
   try {
     const { id } = req.params;
     const { userEmail } = req.query;
-
-    const filter = { _id: new ObjectId(id), userEmail: userEmail };
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid ID",
+      });
+    }
+    const filter = { _id: new ObjectId(id), userEmail };
     const result = await notificationCollection.deleteOne(filter);
 
     res.send(result);
   } catch (error) {
-    console.error("❌ Delete Notification Error:", error);
-    res.status(500).json({ message: "Internal server error" });
+    return sendServerError(res, error);
   }
 });
 
@@ -203,18 +252,13 @@ app.delete("/api/notifications/:id", async (req, res) => {
 app.get("/api/dashboard-overview", async (req, res) => {
   try {
     const { email } = req.query;
-    if (!email) {
-      return res
-        .status(400)
-        .json({ error: "Email query parameter is required" });
-    }
+    if (!validateEmail(email, res)) return;
 
-    const expenses =
-      (await expenseCollection.find({ userEmail: email }).toArray()) || [];
-    const incomes =
-      (await incomeCollection.find({ userEmail: email }).toArray()) || [];
-    const budgets =
-      (await budgetCollection.find({ userEmail: email }).toArray()) || [];
+    const [expenses, incomes, budgets] = await Promise.all([
+      expenseCollection.find({ userEmail: email }).toArray(),
+      incomeCollection.find({ userEmail: email }).toArray(),
+      budgetCollection.find({ userEmail: email }).toArray(),
+    ]);
 
     const today = new Date();
     const currentYear = today.getFullYear();
@@ -244,31 +288,33 @@ app.get("/api/dashboard-overview", async (req, res) => {
         ? `${currentYear - 1}-12`
         : `${currentYear}-${String(currentMonthIdx).padStart(2, "0")}`;
 
-    let totalIncomeAllTime = incomes.reduce(
-      (sum, i) => sum + (Number(i.amount) || 0),
+    const totalIncomeAllTime = incomes.reduce(
+      (sum, { amount }) => sum + (Number(amount) || 0),
       0,
     );
-    let totalExpenseAllTime = expenses.reduce(
-      (sum, e) => sum + (Number(e.amount) || 0),
+
+    const totalExpenseAllTime = expenses.reduce(
+      (sum, { amount }) => sum + (Number(amount) || 0),
       0,
     );
+
     const totalBalance = totalIncomeAllTime - totalExpenseAllTime;
 
     const currentMonthIncome = incomes
-      .filter((i) => i.date && i.date.startsWith(currentYearMonthStr))
-      .reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
+      .filter(({ date }) => date?.startsWith(currentYearMonthStr))
+      .reduce((sum, { amount }) => sum + (Number(amount) || 0), 0);
 
     const prevMonthIncome = incomes
-      .filter((i) => i.date && i.date.startsWith(prevYearMonthStr))
-      .reduce((sum, i) => sum + (Number(i.amount) || 0), 0);
+      .filter(({ date }) => date?.startsWith(prevYearMonthStr))
+      .reduce((sum, { amount }) => sum + (Number(amount) || 0), 0);
 
     const currentMonthExpense = expenses
-      .filter((e) => e.date && e.date.startsWith(currentYearMonthStr))
-      .reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
+      .filter(({ date }) => date?.startsWith(currentYearMonthStr))
+      .reduce((sum, { amount }) => sum + (Number(amount) || 0), 0);
 
     const prevMonthExpense = expenses
-      .filter((e) => e.date && e.date.startsWith(prevYearMonthStr))
-      .reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
+      .filter(({ date }) => date?.startsWith(prevYearMonthStr))
+      .reduce((sum, { amount }) => sum + (Number(amount) || 0), 0);
 
     const getPercentageChange = (current, previous) => {
       if (previous === 0) return current > 0 ? 100 : 0;
@@ -289,14 +335,6 @@ app.get("/api/dashboard-overview", async (req, res) => {
       currentMonthIncome > 0
         ? Number(((currentMonthSavings / currentMonthIncome) * 100).toFixed(1))
         : 0;
-
-    const getYearMonthStr = (dateVal) => {
-      if (!dateVal) return null;
-      const d = new Date(dateVal);
-      return isNaN(d)
-        ? null
-        : `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
-    };
 
     const activeMonthsSet = new Set();
     incomes.forEach((i) => {
@@ -413,16 +451,12 @@ app.get("/api/dashboard-overview", async (req, res) => {
 app.get("/api/analytics-overview", async (req, res) => {
   try {
     const { email } = req.query;
-    if (!email) {
-      return res
-        .status(400)
-        .json({ error: "Email query parameter is required" });
-    }
+    if (!validateEmail(email, res)) return;
 
-    const expenses =
-      (await expenseCollection.find({ userEmail: email }).toArray()) || [];
-    const incomes =
-      (await incomeCollection.find({ userEmail: email }).toArray()) || [];
+    const [expenses, incomes] = await Promise.all([
+      expenseCollection.find({ userEmail: email }).toArray(),
+      incomeCollection.find({ userEmail: email }).toArray(),
+    ]);
 
     let totalIncomeAllTime = 0;
     let totalExpenseAllTime = 0;
@@ -446,13 +480,6 @@ app.get("/api/analytics-overview", async (req, res) => {
     ];
     const today = new Date();
     const currentYearMonthStr = today.toISOString().slice(0, 7);
-
-    const getYearMonthStr = (dateVal) => {
-      if (!dateVal) return null;
-      const d = new Date(dateVal);
-      if (isNaN(d)) return null;
-      return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
-    };
 
     const activeMonthsSet = new Set();
     incomes.forEach((i) => {
@@ -588,7 +615,7 @@ app.post("/api/budgets", async (req, res) => {
     });
     res.send({ success: true, result });
   } catch (error) {
-    res.status(500).send({ message: "Error setting budget", error });
+    return sendServerError(res, error);
   }
 });
 
@@ -661,11 +688,7 @@ app.get("/api/expenses", async (req, res) => {
   try {
     const { email, search, category } = req.query;
 
-    if (!email) {
-      return res
-        .status(400)
-        .json({ message: "Email query parameter is required" });
-    }
+    if (!validateEmail(email, res)) return;
 
     const query = { userEmail: email };
 
@@ -686,8 +709,7 @@ app.get("/api/expenses", async (req, res) => {
 
     res.send(userExpenses);
   } catch (error) {
-    console.error("Database Fetch Error:", error);
-    res.status(500).json({ message: "Internal server error" });
+    return sendServerError(res, error);
   }
 });
 
@@ -710,7 +732,7 @@ app.post("/api/expenses", async (req, res) => {
     if (date && category) {
       const expenseMonthYear = date.slice(0, 7);
       const budget = await budgetCollection.findOne({
-        userEmail: userEmail,
+        userEmail,
         category: { $regex: new RegExp(`^${category}$`, "i") },
         monthYear: expenseMonthYear,
       });
@@ -718,7 +740,7 @@ app.post("/api/expenses", async (req, res) => {
       if (budget) {
         const allExpensesInCat = await expenseCollection
           .find({
-            userEmail: userEmail,
+            userEmail,
             date: { $regex: `^${expenseMonthYear}` },
             category: { $regex: new RegExp(`^${category}$`, "i") },
           })
@@ -743,7 +765,7 @@ app.post("/api/expenses", async (req, res) => {
 
           if (isBudgetAlertEnabled) {
             const existingAlert = await notificationCollection.findOne({
-              userEmail: userEmail,
+              userEmail,
               type: "alert",
               title: "Budget Exceeded",
               message: { $regex: category },
@@ -751,7 +773,7 @@ app.post("/api/expenses", async (req, res) => {
 
             if (!existingAlert) {
               await notificationCollection.insertOne({
-                userEmail: userEmail,
+                userEmail,
                 title: "Budget Exceeded",
                 message: `Your ${category.charAt(0).toUpperCase() + category.slice(1).toLowerCase()} budget has been exceeded by ৳${exceededBy.toLocaleString()}`,
                 type: "alert",
@@ -766,7 +788,7 @@ app.post("/api/expenses", async (req, res) => {
 
     res.send({ success: true, ...result });
   } catch (error) {
-    res.status(500).send({ error: true, message: error.message });
+    return sendServerError(res, error);
   }
 });
 
@@ -775,15 +797,16 @@ app.patch("/api/expenses/:id", async (req, res) => {
     const { id } = req.params;
     const updateData = req.body;
 
-    if (!updateData.userEmail) {
-      return res
-        .status(400)
-        .json({ message: "User email is required for verification" });
-    }
+    if (!validateUserEmail(updateData.userEmail, res)) return;
 
     const { userEmail, ...allowedUpdateFields } = updateData;
-
-    const filter = { _id: new ObjectId(id), userEmail: userEmail };
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid ID",
+      });
+    }
+    const filter = { _id: new ObjectId(id), userEmail };
 
     const updateDoc = {
       $set: {
@@ -803,10 +826,7 @@ app.patch("/api/expenses/:id", async (req, res) => {
     console.log(result, "expence updated");
     res.send({ success: true, result });
   } catch (error) {
-    console.error("Database Update Error:", error);
-    res
-      .status(500)
-      .json({ message: "Internal server error", error: error.message });
+    return sendServerError(res, error);
   }
 });
 
@@ -815,13 +835,14 @@ app.delete("/api/expenses/:id", async (req, res) => {
     const { id } = req.params;
     const { userEmail } = req.query;
 
-    if (!userEmail) {
-      return res
-        .status(400)
-        .json({ message: "User email is required for verification" });
+    if (!validateUserEmail(userEmail, res)) return;
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid ID",
+      });
     }
-
-    const filter = { _id: new ObjectId(id), userEmail: userEmail };
+    const filter = { _id: new ObjectId(id), userEmail };
     const result = await expenseCollection.deleteOne(filter);
 
     if (result.deletedCount === 0) {
@@ -832,10 +853,7 @@ app.delete("/api/expenses/:id", async (req, res) => {
 
     res.send(result);
   } catch (error) {
-    console.error("Database Delete Error:", error);
-    res
-      .status(500)
-      .json({ message: "Internal server error", error: error.message });
+    return sendServerError(res, error);
   }
 });
 
@@ -844,11 +862,7 @@ app.delete("/api/expenses/:id", async (req, res) => {
 app.get("/api/incomes", async (req, res) => {
   try {
     const { email } = req.query;
-    if (!email) {
-      return res
-        .status(400)
-        .json({ message: "Email query parameter is required" });
-    }
+    if (!validateEmail(email, res)) return;
     const userIncomes = await incomeCollection
       .find({ userEmail: email })
       .sort({ date: -1 })
@@ -856,8 +870,7 @@ app.get("/api/incomes", async (req, res) => {
 
     res.send(userIncomes);
   } catch (error) {
-    console.error("Database Fetch Error:", error);
-    res.status(500).json({ message: "Internal server error" });
+    return sendServerError(res, error);
   }
 });
 
@@ -890,7 +903,7 @@ app.post("/api/incomes", async (req, res) => {
 
     res.send(result);
   } catch (error) {
-    res.status(500).send({ error: true, message: error.message });
+    return sendServerError(res, error);
   }
 });
 
@@ -898,16 +911,16 @@ app.patch("/api/incomes/:id", async (req, res) => {
   try {
     const { id } = req.params;
     const updateData = req.body;
-
-    if (!updateData.userEmail) {
-      return res
-        .status(400)
-        .json({ message: "User email is required for verification" });
-    }
+    if (!validateUserEmail(updateData.userEmail, res)) return;
 
     const { userEmail, ...allowedUpdateFields } = updateData;
-
-    const filter = { _id: new ObjectId(id), userEmail: userEmail };
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid ID",
+      });
+    }
+    const filter = { _id: new ObjectId(id), userEmail };
 
     const updateDoc = {
       $set: {
@@ -927,10 +940,7 @@ app.patch("/api/incomes/:id", async (req, res) => {
     console.log(result, "income updated");
     res.send({ success: true, result });
   } catch (error) {
-    console.error("Database Update Error:", error);
-    res
-      .status(500)
-      .json({ message: "Internal server error", error: error.message });
+    return sendServerError(res, error);
   }
 });
 
@@ -939,13 +949,14 @@ app.delete("/api/incomes/:id", async (req, res) => {
     const { id } = req.params;
     const { userEmail } = req.query;
 
-    if (!userEmail) {
-      return res
-        .status(400)
-        .json({ message: "User email is required for verification" });
+    if (!validateUserEmail(userEmail, res)) return;
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid ID",
+      });
     }
-
-    const filter = { _id: new ObjectId(id), userEmail: userEmail };
+    const filter = { _id: new ObjectId(id), userEmail };
     const result = await incomeCollection.deleteOne(filter);
 
     if (result.deletedCount === 0) {
@@ -956,10 +967,7 @@ app.delete("/api/incomes/:id", async (req, res) => {
 
     res.send(result);
   } catch (error) {
-    console.error("Database Delete Error:", error);
-    res
-      .status(500)
-      .json({ message: "Internal server error", error: error.message });
+    return sendServerError(res, error);
   }
 });
 
